@@ -72,7 +72,7 @@ postsinglefile() {
   DIRPATH="${1}"
   which python
   python "${VER0_DIR}/scripts/cluster.py" "${DIRPATH}"
-  python "${VER0_DIR}/scripts/candies.py" "${DIRPATH}"
+  python "${VER0_DIR}/scripts/candify.py" "${DIRPATH}"
   python "${VER0_DIR}/scripts/classify.py" "${DIRPATH}"
 }
 

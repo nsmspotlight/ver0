@@ -36,8 +36,8 @@ def readaa(f: str | Path) -> pd.DataFrame:
 def main():
     parser = argparse.ArgumentParser(prog=__file__)
     parser.add_argument("dirpath", type=Path)
-    parser.add_argument("-m", "--minsamps", type=int)
-    parser.add_argument("-e", "--epsilon", type=float)
+    parser.add_argument("-m", "--minsamps", type=int, default=10)
+    parser.add_argument("-e", "--epsilon", type=float, default=5)
     args = parser.parse_args()
 
     t0 = time.time()
