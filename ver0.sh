@@ -4,6 +4,14 @@
 # ver0.sh: A shell script that runs SPOTLIGHT's Ver0 transient search pipeline. #
 #################################################################################
 
+xtract2fil() {
+  shopt -s extglob
+  mkdir -p "${VER0_DATA}/${VER0_GTACCODE}"
+  python "${VER0_DIR}/scripts/xtract2fil.py" \
+    "${VER0_BEAMS}/${VER0_GTACCODE}"/*.raw.[[:digit:]] \
+    "-o" "${VER0_DATA}/${VER0_GTACCODE}"
+}
+
 aasinglefile() {
   NODE="${3}"
   GPUID="${4}"
@@ -70,7 +78,6 @@ EOM
 
 postsinglefile() {
   DIRPATH="${1}"
-  which python
   python "${VER0_DIR}/scripts/cluster.py" "${DIRPATH}"
   python "${VER0_DIR}/scripts/candify.py" "${DIRPATH}"
   python "${VER0_DIR}/scripts/classify.py" "${DIRPATH}"
@@ -94,39 +101,43 @@ postmultifile() {
 }
 
 aamultinode() {
-  ifstop
+  DATA_DIR="${VER0_DATA}/${VER0_GTACCODE}"
   while read -r NODE; do
     for GPUID in 0 1; do
       ssh -n "${NODE}" "
       $(typeset -f)
       source ${TDSOFT}/env.sh;
-      python ${VER0_DIR}/scripts/distpre.py ${VER0_DATA} ${VER0_DISTS};
-      aamultifile ${VER0_DISTS}/aa.${NODE}.${GPUID}.txt ${AA_JOB_NAME} ${NODE} ${GPUID};
-      " >"${VER0_LOGS}/VER0_${NODE}.txt" 2>&1 &
+      python ${VER0_DIR}/scripts/distribute.py pre ${DATA_DIR} ${VER0_DISTS};
+      aamultifile ${VER0_DISTS}/aa.${NODE}.${GPUID}.txt ${VER0_JOBID} ${NODE} ${GPUID};
+      " >"${VER0_LOGS}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
     done
   done <"${VER0_DIR}/assets/nodes.list"
   wait
 }
 
 postmultinode() {
-  ifstop
-  JOBDIR="${VER0_OUTPUTS}/${AA_JOB_NAME}"
+  JOBDIR="${VER0_OUTPUTS}/${VER0_JOBID}"
   while read -r NODE; do
     for GPUID in 0 1; do
       ssh -n "${NODE}" "
       $(typeset -f)
       source ${TDSOFT}/env.sh;
-      python ${VER0_DIR}/scripts/distpost.py ${JOBDIR} ${VER0_DISTS};
+      python ${VER0_DIR}/scripts/distribute.py post ${JOBDIR} ${VER0_DISTS};
       CUDA_VISIBLE_DEVICES=${GPUID} postmultifile ${VER0_DISTS}/post.${NODE}.${GPUID}.txt;
-      " >>"${VER0_LOGS}/VER0_${NODE}.txt" 2>&1 &
+      " >>"${VER0_LOGS}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
     done
   done <"${VER0_DIR}/assets/nodes.list"
   wait
 }
 
 main() {
+  GTACCODE="${1}"
   TIMESTAMP="$(date '+%d%h%Y_%Hh%Mm%Ss')"
-  export AA_JOB_NAME="AA_${TIMESTAMP}"
+
+  export VER0_JOBID="${TIMESTAMP}"
+  export VER0_GTACCODE="${GTACCODE}"
+
+  xtract2fil
   aamultinode
   postmultinode
 }
@@ -134,4 +145,4 @@ main() {
 ifstop() { trap 'pkill -P $$; exit' SIGINT SIGTERM; }
 
 ifstop
-main
+main "$@"
