@@ -24,7 +24,7 @@ aasinglefile() {
   export AA_CURFILE="${FILEPATH}"
   export AA_OUTPUTS="${VER0_OUTPUTS}"
   export AA_CONFIG="${AA}/input_files/gmrt.${NODE}.${GPUID}.txt"
-  export AA_JOB_DIR="${AA_OUTPUTS}/${JOBNAME}/${BEAMNAME}/bcount0000"
+  export AA_JOB_DIR="${AA_OUTPUTS}/${VER0_GTACCODE}/${JOBNAME}/${BEAMNAME}/bcount0000"
 
   mkdir -p "${AA_JOB_DIR}"
   cd "${AA_JOB_DIR}" || exit
@@ -116,7 +116,7 @@ aamultinode() {
 }
 
 postmultinode() {
-  JOBDIR="${VER0_OUTPUTS}/${VER0_JOBID}"
+  JOBDIR="${VER0_OUTPUTS}/${VER0_GTACCODE}/${VER0_JOBID}"
   while read -r NODE; do
     for GPUID in 0 1; do
       ssh -n "${NODE}" "
