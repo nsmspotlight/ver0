@@ -10,7 +10,7 @@ This is the zeroth version of [**SPOTLIGHT**][spotlight]'s transient search pipe
 - Navigate to `/lustre_archive/apps/tdsoft`.
 - Source the `env.sh` file.
 - Enter the `ver0/` directory.
-- Then run: `ver0.sh <GTAC_CODE>`.
+- Then run: `./ver0 <GTAC_CODE>`.
 
 Note that `ver0` expects the following directories to be present:
 
@@ -21,7 +21,7 @@ Note that `ver0` expects the following directories to be present:
 - **`VER0_LOGS`**: The directory where the logs are dumped.
 - **`VER0_OUTPUT`**: The directory where the pipeline's output is dumped.
 
-Multiple beams are dumped from a ring buffer to disk, time sliced and concatenated together into a single raw file. The [`xtract2fil.py`](./scripts/xtract2fil.py) script then extracts each beams and dumps it into a separate filterbank file in the `$VER0_DATA` directory. The pipeline then distributes the jobs across the nodes specified in [`nodes.list`](./assets/nodes.list), and their individual GPUs, using the [`distribute.py`](./scripts/distribute.py) script. This information is stored in text files in the `$VER0_DISTS` directory for both the *pre* (essentially all of [**`AstroAccelerate`**][AA]) and *post* (clustering + feature extraction + classification) stages. Then, both the *pre* and *post* stages are run: dedispersion, single pulse search, peak filtering, and so on are carried out using the [**AstroAccelerate**][AA] pipeline. We then cluster candidates (via [`cluster.py`](./scripts/cluster.py)), extract features from them using [**`candies`**][candies] (via [`candify.py`](./scripts/candify.py)), and classify them using [**`FETCH`**][FETCH] (via [`classify.py`](./scripts/classify.py)). The pipeline logs are dumped to `$VER0_LOGS`, and the outputs to `$VER0_OUTPUT`. As indicated by the `$` sign, the path to each of these directories is specified as an environment variable in `env.sh`, which has to be sourced before the pipeline is run.
+Multiple beams are dumped from a ring buffer to disk, time sliced and concatenated together into a single raw file. The [`xtract2fil`](https://github.com/nsmspotlight/xtract2fil) package then extracts each beams and dumps it into a separate filterbank file in the `$VER0_DATA` directory. The pipeline then distributes the jobs across the nodes specified in [`nodes.list`](./assets/nodes.list), and their individual GPUs, using the [`distribute.py`](./scripts/distribute.py) script. This information is stored in text files in the `$VER0_DISTS` directory for both the *pre* (essentially all of [**`AstroAccelerate`**][AA]) and *post* (clustering + feature extraction + classification) stages. Then, both the *pre* and *post* stages are run. Dedispersion, single pulse search, peak filtering, and so on are carried out using the [**AstroAccelerate**][AA] pipeline. Candidates are then clustered in [`cluster.py`](./scripts/cluster.py), features are extracted from each of them using [**`candies`**][candies] in [`candify.py`](./scripts/candify.py), and then each candidate is classified using [**`FETCH`**][FETCH] in [`classify.py`](./scripts/classify.py). The pipeline logs are dumped to `$VER0_LOGS`, and the outputs to `$VER0_OUTPUT`. As indicated by the `$` sign, the path to each of these directories is specified as an environment variable in `env.sh`, which has to be sourced before the pipeline is run.
 
 The following files are dropped as part of the pipeline's output:
 

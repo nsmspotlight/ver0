@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+
+PROGNAME="ver0"
+VERSION="0.0.1"
+AUTHORNAME="Ujjwal Panda"
+AUTHOREMAIL="ujjwalpanda97@gmail.com"
+PROGDESC="A shell script that runs SPOTLIGHT's offline transient search pipeline."
+
+NBEAMS=640
+STATUSFILE="/tmp/analysis_status.log"
+
+xtraction() {
+  SCANIN="${2}"
+  BEAMDIR="${1}"
+  SCAN="$(basename "${SCANIN}")"
+
+  FILES=()
+  while IFS= read -r -d $'\0'; do
+    FILES+=("$REPLY")
+  done < <(find "${BEAMDIR}" -regextype posix-extended -regex "${BEAMDIR}/${SCAN}.raw.[0-9]+" -print0)
+
+  xtract2fil \
+    "${FILES[@]}" \
+    "--njobs" "16" \
+    "--output" "${SCANIN}" \
+    "--nbeams" "$((NBEAMS / 16))"
+
+  for FIL in "${SCANIN}"/BM*.fil; do
+    BMDIR="${SCANIN}/$(basename "${FIL}" ".fil")"
+    mkdir -p "${BMDIR}"
+    mv "${FIL}" "${BMDIR}"
+  done
+}
+
+aasinglefile() {
+  NODE="${2}"
+  GPUID="${3}"
+  SCANOUT="${4}"
+  FILEPATH="${1}"
+  BEAMNAME="$(basename "${1}" ".fil")"
+
+  export AA="${TDSOFT}/aa.frb"
+  export AA_EXE="${AA}/build"
+  export AA_OUTPUTS="${SCANOUT}"
+  export AA_CURFILE="${FILEPATH}"
+  export AA_JOB_DIR="${AA_OUTPUTS}/${BEAMNAME}"
+  export AA_CONFIG="${AA}/input_files/gmrt.${NODE}.${GPUID}.txt"
+
+  mkdir -p "${AA_JOB_DIR}"
+  cd "${AA_JOB_DIR}" || exit
+  echo "${AA_CURFILE}" >"curfile.txt"
+
+  rm -f analysed*
+  rm -f acc*
+  rm -f global*
+  rm -f fourier*
+  rm -f harmonic*
+  rm -f candidate*
+  rm -f peak*
+
+  read -r -d '' __CONFIG <<EOM
+range    0    150  0.1  1 1
+range    150  300  0.1  1 1
+range    300  500  0.1  1 1
+range    500  900  0.2  1 1
+range    900  1200 0.4  1 1
+range    1200 1500 0.8  1 1
+range    1500 2000 1.0  1 1
+
+selected_card_id ${GPUID}
+
+sigma_cutoff    6
+sigma_constant  3.0
+max_boxcar_width_in_sec 0.5
+
+zero_dm
+analysis
+baselinenoise
+set_bandpass_average
+output_DDTR_normalization
+
+file ${AA_CURFILE}
+EOM
+
+  echo "${__CONFIG}" >"${AA_CONFIG}"
+
+  time "${AA_EXE}/astro-accelerate" "${AA_CONFIG}"
+
+  if ls analysed* 1>/dev/null 2>&1; then cat analysed* >global_analysed_frb.dat; fi
+  if ls fourier-* 1>/dev/null 2>&1; then cat fourier-* >global_periods.dat; fi
+  if ls fourier_inter* 1>/dev/null 2>&1; then cat fourier_inter* >global_interbin.dat; fi
+  if ls harmo* 1>/dev/null 2>&1; then cat harmo* >global_harmonics.dat; fi
+  if ls candidate* 1>/dev/null 2>&1; then cat candidate* >global_candidates.dat; fi
+  if ls peak* 1>/dev/null 2>&1; then cat peak* >global_peaks.dat; fi
+
+  echo "Finished. Output is located in ${AA_JOB_DIR}."
+}
+
+aamultifile() {
+  NODE="${2}"
+  GPUID="${3}"
+  SCANOUT="${4}"
+  FILELIST="${1}"
+  while read -r FILEPATH; do
+    aasinglefile "${FILEPATH}" "${NODE}" "${GPUID}" "${SCANOUT}"
+  done <"${FILELIST}"
+}
+
+postmultifile() {
+  SCANOUT="${1}"
+  DIRLIST="${2}"
+  while read -r DIRPATH; do
+    python "${VER0DIR}/scripts/cluster.py" "${DIRPATH}"
+    python "${VER0DIR}/scripts/candify.py" "${DIRPATH}"
+  done <"${DIRLIST}"
+  mapfile -t <"${DIRLIST}"
+  python "${VER0DIR}/scripts/classify.py" "${MAPFILE[@]}"
+}
+
+aamultinode() {
+  SCANIN="${1}"
+  SCANOUT="${2}"
+  python "${VER0DIR}/scripts/distribute.py" "pre" "${SCANIN}" "/tmp"
+  while read -r NODE; do
+    for GPUID in 0 1; do
+      scp "/tmp/aa.${NODE}.${GPUID}.txt" "${NODE}":"/tmp/aa.${NODE}.${GPUID}.txt"
+      ssh -n "${NODE}" "
+      $(typeset -f)
+      source ${TDSOFT}/env.sh;
+      aamultifile /tmp/aa.${NODE}.${GPUID}.txt ${NODE} ${GPUID} ${SCANOUT};
+      " >"${SCANOUT}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
+    done
+  done <"${VER0DIR}/assets/nodes.list"
+  wait
+}
+
+postmultinode() {
+  SCANOUT="${1}"
+  python "${VER0DIR}/scripts/distribute.py" "post" "${SCANOUT}" "/tmp"
+  while read -r NODE; do
+    for GPUID in 0 1; do
+      scp "/tmp/post.${NODE}.${GPUID}.txt" "${NODE}":"/tmp/post.${NODE}.${GPUID}.txt"
+      ssh -n "${NODE}" "
+      $(typeset -f)
+      source ${TDSOFT}/env.sh;
+      CUDA_VISIBLE_DEVICES=${GPUID} postmultifile ${SCANOUT} /tmp/post.${NODE}.${GPUID}.txt;
+      " >>"${SCANOUT}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
+    done
+  done <"${VER0DIR}/assets/nodes.list"
+  wait
+}
+
+finalize() {
+  SCANOUT="${1}"
+  for BMDIR in "${SCANOUT}"/BM*; do
+    candies plot "${BMDIR}"/*.h5
+  done
+}
+
+filverify() {
+  SCANIN="${1}"
+  NFILS="$(find "${SCANIN}" -name "BM*.fil" | wc -l)"
+  if [ "${NBEAMS}" -eq "${NFILS}" ]; then
+    echo "Xtraction done."
+  else
+    echo "Xtraction failed."
+  fi
+  echo "Number of beams = ${NBEAMS}"
+  echo "Number of filterbanks = ${NFILS}"
+}
+
+aaverify() {
+  SCANOUT="${1}"
+  NDATS="$(find "${SCANOUT}" -name "*.dat" | wc -l)"
+  if [ "${NBEAMS}" -eq "${NDATS}" ]; then
+    echo "AstroAccelerate is done."
+  else
+    echo "AstroAccelerate has failed."
+  fi
+  echo "Number of beams = ${NBEAMS}"
+  echo "Number of candidate files = ${NDATS}"
+}
+
+postverify() {
+  SCANOUT="${1}"
+  for BMDIR in "${SCANOUT}"/BM*; do
+    BMNAME=$(basename "$BMDIR")
+    NH5="$(find "${BMDIR}" -name "*.h5" | wc -l)"
+    NCANDS="$(($(wc -l <"${BMDIR}/filtered_candidates.csv") - 1))"
+    if [ "${NCANDS}" -eq "${NH5}" ]; then
+      continue
+    else
+      echo "Feature extraction failed for ${BMNAME}."
+    fi
+    echo "Number of candidates for ${BMNAME} = ${NCANDS}"
+    echo "Number of HDF5 files created for ${BMNAME} = ${NH5}"
+  done
+
+  NCANDIDATES="$(find "${SCANOUT}" -name "*.h5" | wc -l)"
+  NCLASSIFIED="$(($(wc -l <"${SCANOUT}/classification.csv") - 1))"
+  if [ "${NCANDIDATES}" -eq "${NCLASSIFIED}" ]; then
+    echo "Classification finished successfully."
+  else
+    echo "Classification failed."
+  fi
+  echo "Total number of candidates = ${NCANDIDATES}"
+  echo "Total number of classifications done = ${NCLASSIFIED}"
+}
+
+ver0_help() {
+  echo "                                    "
+  echo "  ██╗   ██╗███████╗██████╗  ██████╗ "
+  echo "  ██║   ██║██╔════╝██╔══██╗██╔═████╗"
+  echo "  ██║   ██║█████╗  ██████╔╝██║██╔██║"
+  echo "  ╚██╗ ██╔╝██╔══╝  ██╔══██╗████╔╝██║"
+  echo "   ╚████╔╝ ███████╗██║  ██║╚██████╔╝"
+  echo "    ╚═══╝  ╚══════╝╚═╝  ╚═╝ ╚═════╝ "
+  echo "                                    "
+  echo
+  echo "  Copyright (c) ${AUTHORNAME} <${AUTHOREMAIL}>"
+  echo
+  echo "  ${PROGNAME} v${VERSION}"
+  echo
+  echo "  ${PROGDESC}"
+  echo
+  echo "  Usage:"
+  echo
+  echo "    run       Run the pipeline."
+  echo "    help      Print this help message."
+  echo "    verify    Verify a run of the pipeline."
+  echo "    kill      Kill the pipeline. NOTE: Use with caution, since this kills EVERYTHING."
+  echo
+}
+
+ver0_run() {
+  if [ "$(ssh login02 "cat /tmp/spltcontrol_status.log" | head -1)" = "splt_stat = ON" ]; then
+    echo "Correlator is running. Exiting..."
+    exit 1
+  fi
+
+  echo "ANALYSIS = ON" >"${STATUSFILE}"
+
+  while read -r GTACDIR; do
+    GTACDIR="/lustre_data/spotlight/data/${GTACDIR}"
+
+    FILDIR="${GTACDIR}/FilData"
+    BEAMDIR="${GTACDIR}/BeamData"
+    PIPEDIR="${GTACDIR}/FRBPipeData"
+
+    SCANS=()
+    for FN in "${BEAMDIR}"/*.raw.0; do
+      SCANS+=("$(basename "${FN}" ".raw.0")")
+    done
+
+    for SCAN in "${SCANS[@]}"; do
+      SCANIN="${FILDIR}/${SCAN}"
+      SCANOUT="${PIPEDIR}/${SCAN}"
+      mkdir -p "${SCANIN}"
+      mkdir -p "${SCANOUT}"
+      time xtraction "${BEAMDIR}" "${SCANIN}"
+      time aamultinode "${SCANIN}" "${SCANOUT}"
+      time postmultinode "${SCANOUT}"
+      # time finalize "${SCANOUT}"
+    done
+  done <"${VER0DIR}/assets/gtac.list"
+
+  echo "ANALYSIS = OFF" >"${STATUSFILE}"
+}
+
+ver0_verify() {
+  GTACDIR="${1}"
+  FILDIR="${GTACDIR}/FilData"
+  BEAMDIR="${GTACDIR}/BeamData"
+  PIPEDIR="${GTACDIR}/FRBPipeData"
+
+  SCANS=()
+  for FN in "${BEAMDIR}"/*.raw.0; do
+    SCANS+=("$(basename "${FN}" ".raw.0")")
+  done
+
+  for SCAN in "${SCANS[@]}"; do
+    SCANIN="${FILDIR}/${SCAN}"
+    SCANOUT="${PIPEDIR}/${SCAN}"
+    time filverify "${SCANIN}"
+    time aaverify "${SCANOUT}"
+    time postverify "${SCANOUT}"
+  done
+}
+
+ver0_kill() {
+  while read -r NODE; do
+    ssh -n "${NODE}" "skill -u spotlight"
+  done <"${VER0DIR}/assets/nodes.list"
+}
+
+CMD=$1
+case ${CMD} in
+"" | "-h" | "--help") ver0_help ;;
+*)
+  shift
+
+  "ver0_${CMD}"
+  if [ $? = 127 ]; then
+    echo "Error: ${CMD} is not a known subcommand." >&2
+    echo "Run ${PROGNAME} --help' for a list of known subcommands." >&2
+    exit 1
+  fi
+  ;;
+esac

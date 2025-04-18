@@ -13,29 +13,30 @@ def batched(x: list, k: int):
 
 
 GPUIDS = [0, 1]
-VER0DIR = Path(os.environ["VER0_DIR"])
+VER0DIR = Path(os.environ["VER0DIR"])
 NODES = (VER0DIR / "assets" / "nodes.list").read_text().split()
 
 
 def pre(args):
-    filfiles = natsorted(list(Path(args.dirpath).glob("*.fil")))
+    filfiles = natsorted(list(Path(args.dirpath).glob("BM*/BM*.fil")))
     batches = [batch for batch in batched(filfiles, k=len(NODES) * 2)]
     pairs = [(gpuid, node) for node in NODES for gpuid in GPUIDS]
 
     for (gpuid, node), batch in zip(pairs, batches):
         with open(args.outpath / f"aa.{node}.{gpuid}.txt", "w") as f:
             f.write("\n".join([str(_) for _ in batch]))
+            f.write("\n")
 
 
 def post(args):
     beamdirs = natsorted([_ for _ in Path(args.dirpath).glob("*") if _.is_dir()])
-    bcounts = [beamdir / "bcount0000" for beamdir in beamdirs]
-    batches = [batch for batch in batched(bcounts, k=len(NODES) * 2)]
+    batches = [batch for batch in batched(beamdirs, k=len(NODES) * 2)]
     pairs = [(gpuid, node) for node in NODES for gpuid in GPUIDS]
 
     for (gpuid, node), batch in zip(pairs, batches):
         with open(args.outpath / f"post.{node}.{gpuid}.txt", "w") as f:
             f.write("\n".join([str(_) for _ in batch]))
+            f.write("\n")
 
 
 def main():
