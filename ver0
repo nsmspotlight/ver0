@@ -19,11 +19,15 @@ xtraction() {
     FILES+=("$REPLY")
   done < <(find "${BEAMDIR}" -regextype posix-extended -regex "${BEAMDIR}/${SCAN}.raw.[0-9]+" -print0)
 
-  xtract2fil \
-    "${FILES[@]}" \
-    "--njobs" "16" \
-    "--output" "${SCANIN}" \
-    "--nbeams" "$((NBEAMS / 16))"
+  readarray -t NODES <"${VER0DIR}/assets/nodes.list"
+
+  ssh -t -t "${NODES[0]}" "
+      $(typeset -f)
+      source ${TDSOFT}/env.sh;
+      xtract2fil \
+        ${FILES[*]} \
+        --output ${SCANIN} \
+        --nbeams $((NBEAMS / 16));"
 
   for FIL in "${SCANIN}"/BM*.fil; do
     BMDIR="${SCANIN}/$(basename "${FIL}" ".fil")"
