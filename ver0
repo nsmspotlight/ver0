@@ -243,6 +243,7 @@ ver0_run() {
   fi
 
   echo "ANALYSIS = ON" >"${STATUSFILE}"
+  scp "${STATUSFILE}" "login02:${STATUSFILE}"
 
   while read -r GTACDIR; do
     GTACDIR="/lustre_data/spotlight/data/${GTACDIR}"
