@@ -1,3 +1,5 @@
+
+
 # `ver0`: [**SPOTLIGHT**](https://spotlight.ncra.tifr.res.in)’s `Ver0` Pipeline
 
 [**`ver0`**](https://github.com/nsmspotlight/ver0) is the zeroth version
@@ -17,8 +19,6 @@ To run it, follow these steps:
     (`cd /lustre_archive/apps/tdsoft`).
 -   Source the `env.sh` file (`source env.sh`).
 -   Enter the `ver0/` directory (`cd ver0` *or* `cd $VER0DIR`).
--   Add the nodes you wish to use to
-    [**`assets/nodes.list`**](./assets/nodes.list).
 -   Add the observations you wish to process to
     [**`assets/gtac.list`**](./assets/gtac.list).
 -   Then run: `./ver0 run`.
@@ -45,6 +45,21 @@ To run it, follow these steps:
 >         `rggpu39`. These are the nodes which are available regardless
 >         of whether the correlator is operational or not. This allows
 >         us to run the pipeline alongside the correlator.
+>
+>     `ver0` has the ability to pick one of these subsets. By default,
+>     it will pick all 36 nodes to run the pipeline; one can explicitly
+>     select this mode by running `./ver0 run -a` or `./ver0 run --all`.
+>     This checks if the correaltor is running, and will prevent it from
+>     running if it is not already doing so. If one wishes to run the
+>     analysis on just the 4 nodes in `nodes.list.ltd`, then one should
+>     run the pipeline with `./ver0 run -r` or
+>     `./ver0 run --restricted`. Note that this will run whether or not
+>     the correlator is running or not, since the nodes it uses are not
+>     used by the correlator. In case a different set of nodes is
+>     required to run the pipeline, one should manually edit the
+>     [**`assets/nodes.list`**](./assets/nodes.list) file before running
+>     the pipeline, and then run it with `./ver0 run -m` or
+>     `./ver0 run --manual`.
 >
 > 3.  Since the pipeline does take some time to run, one can run it
 >     inside a detached terminal via `screen`. To do so, create a new
