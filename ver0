@@ -38,10 +38,11 @@ xtraction() {
         --output ${SCANIN} \
         --nbeams $((NBEAMS / 16));"
 
-  # Copy over the headers to where the filterbanks are.
-  # NOTE: This is mostly used by Jyotirmoy's offline
-  # pulsar search pipeline.
+  # Remove raw files and copy over the headers to where
+  # the filterbanks are. The headers are mostly used by
+  # Jyotirmoy's offline pulsar search pipeline.
   for FILE in "${FILES[@]}"; do
+    rm -rf "${FILE}"
     cp "${FILE}.ahdr" "${SCANIN}"
   done
 }
