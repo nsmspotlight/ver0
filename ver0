@@ -37,14 +37,6 @@ xtraction() {
         --njobs 16 \
         --output ${SCANIN} \
         --nbeams $((NBEAMS / 16));"
-
-  # Remove raw files and copy over the headers to where
-  # the filterbanks are. The headers are mostly used by
-  # Jyotirmoy's offline pulsar search pipeline.
-  for FILE in "${FILES[@]}"; do
-    rm -rf "${FILE}"
-    cp "${FILE}.ahdr" "${SCANIN}"
-  done
 }
 
 # Run AstroAccelerate on a single file.
@@ -193,12 +185,14 @@ filverify() {
   SCANIN="${1}"
   NFILS="$(find "${SCANIN}" -name "BM*.fil" | wc -l)"
   if [ "${NBEAMS}" -eq "${NFILS}" ]; then
-    echo "Xtraction done."
+    echo "Xtraction worked."
+    echo "Number of filterbanks = ${NFILS}."
+    return 0
   else
-    echo "Xtraction failed."
+    echo "Xtraction failed!"
+    echo "Number of filterbanks = ${NFILS} != ${NBEAMS}."
+    return 1
   fi
-  echo "Number of beams = ${NBEAMS}"
-  echo "Number of filterbanks = ${NFILS}"
 }
 
 # Verify AstroAccelerate was run successfully.
@@ -207,11 +201,11 @@ aaverify() {
   NDATS="$(find "${SCANOUT}" -name "global_peaks.dat" | wc -l)"
   if [ "${NBEAMS}" -eq "${NDATS}" ]; then
     echo "AstroAccelerate is done."
+    echo "Number of candidate files = ${NDATS}."
   else
-    echo "AstroAccelerate has failed."
+    echo "AstroAccelerate has failed!"
+    echo "Number of candidate files (${NDATS}) != Number of beams (${NBEAMS})."
   fi
-  echo "Number of beams = ${NBEAMS}"
-  echo "Number of candidate files = ${NDATS}"
 }
 
 # Verify if beams were post-processed successfully.
@@ -224,21 +218,21 @@ postverify() {
     if [ "${NCANDS}" -eq "${NH5}" ]; then
       continue
     else
-      echo "Feature extraction failed for ${BMNAME}."
+      echo "Feature extraction failed for ${BMNAME}!"
+      echo "Number of candidates for ${BMNAME} = ${NCANDS}."
+      echo "Number of HDF5 files created for ${BMNAME} = ${NH5}."
     fi
-    echo "Number of candidates for ${BMNAME} = ${NCANDS}"
-    echo "Number of HDF5 files created for ${BMNAME} = ${NH5}"
   done
 
   NCANDIDATES="$(find "${SCANOUT}" -name "*.h5" | wc -l)"
   NCLASSIFIED="$(($(wc -l <"${SCANOUT}/classification.csv") - 1))"
   if [ "${NCANDIDATES}" -eq "${NCLASSIFIED}" ]; then
     echo "Classification finished successfully."
+    echo "Total number of classifications done = ${NCLASSIFIED}."
   else
-    echo "Classification failed."
+    echo "Classification failed!"
+    echo "Total number of candidates (${NCANDIDATES}) != Total number of classifications done (${NCLASSIFIED})."
   fi
-  echo "Total number of candidates = ${NCANDIDATES}"
-  echo "Total number of classifications done = ${NCLASSIFIED}"
 }
 
 # Print the help for `ver0`.
@@ -262,9 +256,10 @@ ver0_help() {
   echo
   echo "    run       Run the pipeline."
   echo "      OPTIONS:"
-  echo "        -a OR --all:        Run on all 36 nodes."
-  echo "        -r OR --restricted: Run on only 4 nodes."
-  echo "        -m OR --manual:     Run on whichver nodes there are in assets/nodes.list"
+  echo "        -b OR --beams:      Specify the number of beams (Default: 640)."
+  echo "        -a OR --all:        Run on all 36 nodes. (Default)"
+  echo "        -r OR --restricted: Run on only 4 nodes: rggpu36 to rggpu39."
+  echo "        -m OR --manual:     Run on whichver nodes there are in assets/nodes.list."
   echo "    help      Print this help message."
   echo "    verify    Verify a run of the pipeline."
   echo "    kill      Kill the pipeline. NOTE: Use with caution, since this kills EVERYTHING."
@@ -288,16 +283,29 @@ ver0_run() {
     for SCAN in "${SCANS[@]}"; do
       SCANIN="${FILDIR}/${SCAN}"
       SCANOUT="${PIPEDIR}/${SCAN}"
+
       mkdir -p "${SCANIN}"
       mkdir -p "${SCANOUT}"
+
       time xtraction "${BEAMDIR}" "${SCANIN}"
+      if filverify; then
+        echo "Deleting raw files and copying over headers."
+        # Remove raw files and copy over the headers to where
+        # the filterbanks are. The headers are mostly used by
+        # Jyotirmoy's offline pulsar search pipeline.
+        for FILE in "${FILES[@]}"; do
+          rm -rf "${FILE}"
+          cp "${FILE}.ahdr" "${SCANIN}"
+        done
+      fi
+
       time aamultinode "${SCANIN}" "${SCANOUT}"
+      aaverify
+
       time postmultinode "${SCANOUT}"
-      # time finalize "${SCANOUT}"
+      postverify
     done
   done <"${VER0DIR}/assets/gtac.list"
-
-  echo "ANALYSIS = OFF" >"${STATUSFILE}"
 }
 
 # Verify a run of the `ver0` pipeline.
@@ -352,10 +360,11 @@ case "${CMD}" in
 "run")
   OPT="${2}"
   case "${OPT}" in
+  "-b" | "--beams") NBEAMS="${3}" ;;
   "" | "-a" | "--all")
     # NOTE: If we are using all 36 nodes, we need to check if the correlator
     # is running, and, if not, prevent it from running while the `ver0` pipeline
-    # is being run, so that they don;t conflict with one another.
+    # is being run, so that they don't conflict with one another.
 
     # Check if the correlator is running. If yes, exit immediately.
     # We check this by reading the `/tmp/spltcontrol_status.log`
@@ -366,24 +375,29 @@ case "${CMD}" in
       exit 1
     fi
 
-    # Write the current status of the pipeline (ON or OFF) to the status file.
-    # This is currently the `/tmp/analysis_status.log` file, and contains only
-    # one line.
-    echo "ANALYSIS = ON" >"${STATUSFILE}"
-    scp "${STATUSFILE}" "login02:${STATUSFILE}"
+    # Write the current status of the pipeline to the status file. This is
+    # currently the `/tmp/analysis_status.log` file, and contains only one
+    # line: "ANALYSIS = ON" or "ANALYSIS = OFF".
+    # NOTE: We have to copy this file to login02.
+    echo "ANALYSIS = ON" >"${STATUSFILE}" && scp "${STATUSFILE}" "login02:${STATUSFILE}"
     cp "${VER0DIR}/assets/nodes.list.all" "${VER0DIR}/assets/nodes.list"
+    ver0_run
+    echo "ANALYSIS = OFF" >"${STATUSFILE}" && scp "${STATUSFILE}" "login02:${STATUSFILE}"
     ;;
   # NOTE: In this mode, the pipeline is "restricted" to 4 nodes at the end
   # of the second rack, meant to not be used by the correlator. This allows
   # us to run the pipeline even if the correlator is running, and hence none
   # of the status files need to be updated.
-  "-r" | "--restricted") cp "${VER0DIR}/assets/nodes.list.ltd" "${VER0DIR}/assets/nodes.list" ;;
+  "-r" | "--restricted")
+    echo "ANALYSIS = OFF" >"${STATUSFILE}" && scp "${STATUSFILE}" "login02:${STATUSFILE}"
+    cp "${VER0DIR}/assets/nodes.list.ltd" "${VER0DIR}/assets/nodes.list"
+    ver0_run
+    ;;
   # NOTE: In this mode, we do nothing, since it is assumed that the user has
   # edited the `nodes.list` themselves, and want to run the pipeline on a
   # custom set of nodes.
-  "-m" | "--manual") ;;
+  "-m" | "--manual") ver0_run ;;
   esac
-  ver0_run
   ;;
 "kill") ver0_kill ;;
 "verify") ver0_verify "${1}" ;;
