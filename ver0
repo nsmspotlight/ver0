@@ -8,6 +8,7 @@ PROGDESC="A shell script that runs SPOTLIGHT's offline transient search pipeline
 
 NBEAMS=640
 STATUSFILE="/tmp/analysis_status.log"
+MONITORFILE="/lustre_archive/spotlight/data/MON_DATA/das_log/analysis_status.log"
 
 # Extract filterbank files.
 xtraction() {
@@ -297,6 +298,10 @@ ver0_run() {
           rm -rf "${FILE}"
           cp "${FILE}.ahdr" "${SCANIN}"
         done
+      else
+        # No use in running the pipeline if the filterbanks did
+        # not get extracted properly. So we exit early.
+        exit 1
       fi
 
       time aamultinode "${SCANIN}" "${SCANOUT}"
@@ -377,19 +382,29 @@ case "${CMD}" in
 
     # Write the current status of the pipeline to the status file. This is
     # currently the `/tmp/analysis_status.log` file, and contains only one
-    # line: "ANALYSIS = ON" or "ANALYSIS = OFF".
-    # NOTE: We have to copy this file to login02.
-    echo "ANALYSIS = ON" >"${STATUSFILE}" && scp "${STATUSFILE}" "login02:${STATUSFILE}"
+    # line: "ANALYSIS = ON" or "ANALYSIS = OFF". We write the same line to
+    # the monitor file, so that the webpage is updated accordingly.
+    # NOTE: We copy this file to login02, otherwise it won't be read by the correlator!
+    echo "ANALYSIS = ON" >"${STATUSFILE}"
+    echo "ANALYSIS = ON" >"${MONITORFILE}"
+    scp "${STATUSFILE}" "login02:${STATUSFILE}"
     cp "${VER0DIR}/assets/nodes.list.all" "${VER0DIR}/assets/nodes.list"
     ver0_run
-    echo "ANALYSIS = OFF" >"${STATUSFILE}" && scp "${STATUSFILE}" "login02:${STATUSFILE}"
+    echo "ANALYSIS = OFF" >"${STATUSFILE}"
+    echo "ANALYSIS = OFF" >"${MONITORFILE}"
+    scp "${STATUSFILE}" "login02:${STATUSFILE}"
     ;;
   # NOTE: In this mode, the pipeline is "restricted" to 4 nodes at the end
   # of the second rack, meant to not be used by the correlator. This allows
   # us to run the pipeline even if the correlator is running, and hence none
   # of the status files need to be updated.
+  # NOTE: We still update the monitor file with the ON status when the pipeline
+  # is running, since that updates the webpage, and helps inform the rest of the
+  # team whether analysis is going or not.
   "-r" | "--restricted")
-    echo "ANALYSIS = OFF" >"${STATUSFILE}" && scp "${STATUSFILE}" "login02:${STATUSFILE}"
+    echo "ANALYSIS = OFF" >"${STATUSFILE}"
+    echo "ANALYSIS = ON" >"${MONITORFILE}"
+    scp "${STATUSFILE}" "login02:${STATUSFILE}"
     cp "${VER0DIR}/assets/nodes.list.ltd" "${VER0DIR}/assets/nodes.list"
     ver0_run
     ;;
