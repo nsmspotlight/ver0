@@ -18,7 +18,7 @@ NODES = (VER0DIR / "assets" / "nodes.list").read_text().split()
 
 
 def pre(args):
-    filfiles = natsorted(list(Path(args.dirpath).glob("BM*/BM*.fil")))
+    filfiles = natsorted(list(Path(args.dirpath).glob("BM*.fil")))
     batches = [batch for batch in batched(filfiles, k=len(NODES) * 2)]
     pairs = [(gpuid, node) for node in NODES for gpuid in GPUIDS]
 
