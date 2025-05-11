@@ -12,8 +12,6 @@ MONITORFILE="/lustre_archive/spotlight/data/MON_DATA/das_log/analysis_status.log
 
 # Extract filterbank files.
 xtraction() {
-  SCANIN="${2}"
-  BEAMDIR="${1}"
   SCAN="$(basename "${SCANIN}")"
 
   # Get the names of the raw files, using a regular expression.
@@ -22,10 +20,12 @@ xtraction() {
   FILES=()
   while IFS= read -r -d $'\0'; do
     FILES+=("$REPLY")
-  done < <(find "${BEAMDIR}" -regextype posix-extended -regex "$(sed 's/[^^]/[&]/g; s/\^/\\^/g' <<<"${BEAMDIR}/${SCAN}").raw.[0-9]+" -print0)
-
-  # Read in the node list.
-  readarray -t NODES <"${VER0DIR}/assets/nodes.list"
+  done < <(
+    find \
+      "${BEAMDIR}" \
+      -regextype posix-extended \
+      -regex "$(sed 's/[^^]/[&]/g; s/\^/\\^/g' <<<"${BEAMDIR}/${SCAN}").raw.[0-9]+" -print0
+  )
 
   # SSH into the first node in the node list, and extract
   # the filterbank files there. We run it parallely over
@@ -49,12 +49,12 @@ aasinglefile() {
   BEAMNAME="$(basename "${1}" ".fil")"
 
   # Set necessary environment variables.
-  export AA="${TDSOFT}/aa.frb"
-  export AA_EXE="${AA}/build"
-  export AA_OUTPUTS="${SCANOUT}"
-  export AA_CURFILE="${FILEPATH}"
-  export AA_JOB_DIR="${AA_OUTPUTS}/${BEAMNAME}"
-  export AA_CONFIG="${AA}/input_files/gmrt.${NODE}.${GPUID}.txt"
+  AA="${TDSOFT}/aa.frb"
+  AA_EXE="${AA}/build"
+  AA_OUTPUTS="${SCANOUT}"
+  AA_CURFILE="${FILEPATH}"
+  AA_JOB_DIR="${AA_OUTPUTS}/${BEAMNAME}"
+  AA_CONFIG="${AA}/input_files/gmrt.${NODE}.${GPUID}.txt"
 
   # Create the directory where we will drop AstroAccelerate's output.
   mkdir -p "${AA_JOB_DIR}"
@@ -138,10 +138,8 @@ postmultifile() {
 
 # Run AstroAccelerate over multiple nodes (and GPUs).
 aamultinode() {
-  SCANIN="${1}"
-  SCANOUT="${2}"
-  python "${VER0DIR}/scripts/distribute.py" "pre" "${SCANIN}" "/tmp"
-  while read -r NODE; do
+  python "${VER0DIR}/scripts/distribute.py" "pre" "${SCANIN}" "/tmp" "--nodes" "${NODES[@]}"
+  for NODE in "${NODES[@]}"; do
     for GPUID in 0 1; do
       scp "/tmp/aa.${NODE}.${GPUID}.txt" "${NODE}":"/tmp/aa.${NODE}.${GPUID}.txt"
       ssh -n "${NODE}" "
@@ -150,15 +148,14 @@ aamultinode() {
       aamultifile /tmp/aa.${NODE}.${GPUID}.txt ${NODE} ${GPUID} ${SCANOUT};
       " >"${SCANOUT}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
     done
-  done <"${VER0DIR}/assets/nodes.list"
+  done
   wait
 }
 
 # Post-process beams over multiple nodes (and GPUs).
 postmultinode() {
-  SCANOUT="${1}"
-  python "${VER0DIR}/scripts/distribute.py" "post" "${SCANOUT}" "/tmp"
-  while read -r NODE; do
+  python "${VER0DIR}/scripts/distribute.py" "post" "${SCANOUT}" "/tmp" "--nodes" "${NODES[@]}"
+  for NODE in "${NODES[@]}"; do
     for GPUID in 0 1; do
       scp "/tmp/post.${NODE}.${GPUID}.txt" "${NODE}":"/tmp/post.${NODE}.${GPUID}.txt"
       ssh -n "${NODE}" "
@@ -167,7 +164,7 @@ postmultinode() {
       CUDA_VISIBLE_DEVICES=${GPUID} postmultifile ${SCANOUT} /tmp/post.${NODE}.${GPUID}.txt;
       " >>"${SCANOUT}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
     done
-  done <"${VER0DIR}/assets/nodes.list"
+  done
   wait
 }
 
@@ -175,7 +172,8 @@ postmultinode() {
 # TODO: Incorporate Kshitij's codes for the same here. See if
 # they can be improved as well.
 finalize() {
-  SCANOUT="${1}"
+  NODES="${1}"
+  SCANOUT="${2}"
   for BMDIR in "${SCANOUT}"/BM*; do
     candies plot "${BMDIR}"/*.h5
   done
@@ -183,7 +181,6 @@ finalize() {
 
 # Verify if filterbank files were created successfully.
 filverify() {
-  SCANIN="${1}"
   NFILS="$(find "${SCANIN}" -name "BM*.fil" | wc -l)"
   if [ "${NBEAMS}" -eq "${NFILS}" ]; then
     echo "Xtraction worked."
@@ -198,27 +195,25 @@ filverify() {
 
 # Verify AstroAccelerate was run successfully.
 aaverify() {
-  SCANOUT="${1}"
   NDATS="$(find "${SCANOUT}" -name "global_peaks.dat" | wc -l)"
   if [ "${NBEAMS}" -eq "${NDATS}" ]; then
     echo "AstroAccelerate is done."
     echo "Number of candidate files = ${NDATS}."
+    return 0
   else
     echo "AstroAccelerate has failed!"
     echo "Number of candidate files (${NDATS}) != Number of beams (${NBEAMS})."
+    return 1
   fi
 }
 
 # Verify if beams were post-processed successfully.
 postverify() {
-  SCANOUT="${1}"
   for BMDIR in "${SCANOUT}"/BM*; do
     BMNAME=$(basename "$BMDIR")
     NH5="$(find "${BMDIR}" -name "*.h5" | wc -l)"
     NCANDS="$(($(wc -l <"${BMDIR}/filtered_candidates.csv") - 1))"
-    if [ "${NCANDS}" -eq "${NH5}" ]; then
-      continue
-    else
+    if ! [ "${NCANDS}" -eq "${NH5}" ]; then
       echo "Feature extraction failed for ${BMNAME}!"
       echo "Number of candidates for ${BMNAME} = ${NCANDS}."
       echo "Number of HDF5 files created for ${BMNAME} = ${NH5}."
@@ -234,6 +229,36 @@ postverify() {
     echo "Classification failed!"
     echo "Total number of candidates (${NCANDIDATES}) != Total number of classifications done (${NCLASSIFIED})."
   fi
+}
+
+# Check if the correlator is running. If yes, exit immediately.
+# We check this by reading the `/tmp/spltcontrol_status.log`
+# file, whose first line encodes the current status (ON or OFF)
+# of the correlator. Note that this has to be read from login02.
+corrcheck() {
+  if [ "$(ssh login02 "cat /tmp/spltcontrol_status.log" | head -1)" = "splt_stat = ON" ]; then
+    echo "Correlator is running. Exiting..."
+    exit 1
+  fi
+}
+
+# Write the current status of the pipeline to the status file. This is
+# currently the `/tmp/analysis_status.log` file, and contains only one
+# line: "ANALYSIS = ON" or "ANALYSIS = OFF".
+runstatus() {
+  STATUS="${1}"
+  echo "ANALYSIS = ${STATUS}" >"${STATUSFILE}"
+  # NOTE: Copy status file login02, otherwise it won't be read by the correlator!
+  scp "${STATUSFILE}" "login02:${STATUSFILE}"
+}
+
+# Write the current status of the pipeline to the file read by the monitoring
+# web page. We write the status in the same way as the status file. Note that
+# we don't need to copy this anywhere, since the monitor file is on a disk that
+# can be seen by all nodes.
+webstatus() {
+  STATUS="${1}"
+  echo "ANALYSIS = ${STATUS}" >"${MONITORFILE}"
 }
 
 # Print the help for `ver0`.
@@ -255,12 +280,14 @@ ver0_help() {
   echo
   echo "  Usage:"
   echo
+  echo "  OPTIONS:"
+  echo "    -b OR --beams:      Specify the number of beams (Default: 640)."
+  echo "    -a OR --all:        Run on all 36 nodes."
+  echo "    -r OR --restricted: Run on only 4 nodes: rggpu36 to rggpu39."
+  echo "    -m OR --manual:     Run on whichver nodes there are in assets/nodes.list."
+  echo
+  echo "  COMMANDS:"
   echo "    run       Run the pipeline."
-  echo "      OPTIONS:"
-  echo "        -b OR --beams:      Specify the number of beams (Default: 640)."
-  echo "        -a OR --all:        Run on all 36 nodes. (Default)"
-  echo "        -r OR --restricted: Run on only 4 nodes: rggpu36 to rggpu39."
-  echo "        -m OR --manual:     Run on whichver nodes there are in assets/nodes.list."
   echo "    help      Print this help message."
   echo "    verify    Verify a run of the pipeline."
   echo "    kill      Kill the pipeline. NOTE: Use with caution, since this kills EVERYTHING."
@@ -269,6 +296,7 @@ ver0_help() {
 
 # Run the `ver0` pipeline.
 ver0_run() {
+  NODES="${1}"
   while read -r GTACDIR; do
     GTACDIR="/lustre_data/spotlight/data/${GTACDIR}"
 
@@ -277,8 +305,8 @@ ver0_run() {
     PIPEDIR="${GTACDIR}/FRBPipeData"
 
     SCANS=()
-    for FN in "${BEAMDIR}"/*.raw.0; do
-      SCANS+=("$(basename "${FN}" ".raw.0")")
+    for FN in "${BEAMDIR}"/*.raw.0.ahdr; do
+      SCANS+=("$(basename "${FN}" ".raw.0.ahdr")")
     done
 
     for SCAN in "${SCANS[@]}"; do
@@ -288,27 +316,27 @@ ver0_run() {
       mkdir -p "${SCANIN}"
       mkdir -p "${SCANOUT}"
 
-      time xtraction "${BEAMDIR}" "${SCANIN}"
-      if filverify; then
-        echo "Deleting raw files and copying over headers."
-        # Remove raw files and copy over the headers to where
-        # the filterbanks are. The headers are mostly used by
-        # Jyotirmoy's offline pulsar search pipeline.
-        for FILE in "${FILES[@]}"; do
-          rm -rf "${FILE}"
-          cp "${FILE}.ahdr" "${SCANIN}"
-        done
-      else
-        # No use in running the pipeline if the filterbanks did
-        # not get extracted properly. So we exit early.
-        exit 1
+      time xtraction
+      if ! filverify; then exit 1; fi
+      time aamultinode
+      if ! aaverify; then exit 1; fi
+      time postmultinode
+      postverify
+
+      # Only delete raw files if classification has been done.
+      if [ -f "${SCANOUT}/classification.csv" ]; then
+        if [ -s "${SCANOUT}/classification.csv" ]; then
+          echo "Deleting raw files and copying over headers."
+          # Remove raw files and copy over the headers to where
+          # the filterbanks are. The headers are mostly used by
+          # Jyotirmoy's offline pulsar search pipeline.
+          for FILE in "${FILES[@]}"; do
+            rm -rf "${FILE}"
+            cp "${FILE}.ahdr" "${SCANIN}"
+          done
+        fi
       fi
 
-      time aamultinode "${SCANIN}" "${SCANOUT}"
-      aaverify
-
-      time postmultinode "${SCANOUT}"
-      postverify
     done
   done <"${VER0DIR}/assets/gtac.list"
 }
@@ -321,16 +349,16 @@ ver0_verify() {
   PIPEDIR="${GTACDIR}/FRBPipeData"
 
   SCANS=()
-  for FN in "${BEAMDIR}"/*.raw.0; do
-    SCANS+=("$(basename "${FN}" ".raw.0")")
+  for FN in "${BEAMDIR}"/*.raw.0.ahdr; do
+    SCANS+=("$(basename "${FN}" ".raw.0.ahdr")")
   done
 
   for SCAN in "${SCANS[@]}"; do
     SCANIN="${FILDIR}/${SCAN}"
     SCANOUT="${PIPEDIR}/${SCAN}"
-    time filverify "${SCANIN}"
-    time aaverify "${SCANOUT}"
-    time postverify "${SCANOUT}"
+    filverify
+    aaverify
+    postverify
   done
 }
 
@@ -339,6 +367,7 @@ ver0_verify() {
 # of the nodes in the node list. To
 # be USED WITH UTMOST CAUTION.
 ver0_kill() {
+  NODES="${1}"
   while true; do
     # NOTE: Since this command shouldn't get run accidentally,
     # we first prompt the user if they are sure. Hopefully, it
@@ -348,9 +377,9 @@ WARNING: THIS KILLS ALL PROCESSES ON EACH NODE!
 Yes (y or Y) / No (n or N): " YN
     case "${YN}" in
     [Yy]*)
-      while read -r NODE; do
+      for NODE in "${NODES[@]}"; do
         ssh -n "${NODE}" "skill -u spotlight"
-      done <"${VER0DIR}/assets/nodes.list"
+      done
       break
       ;;
     [Nn]*) exit ;;
@@ -360,67 +389,77 @@ Yes (y or Y) / No (n or N): " YN
 }
 
 # The main `ver0` application loop.
-CMD="${1}"
-case "${CMD}" in
-"run")
+main() {
+  CMD="${1}"
+
   OPT="${2}"
   case "${OPT}" in
   "-b" | "--beams") NBEAMS="${3}" ;;
-  "" | "-a" | "--all")
-    # NOTE: If we are using all 36 nodes, we need to check if the correlator
-    # is running, and, if not, prevent it from running while the `ver0` pipeline
-    # is being run, so that they don't conflict with one another.
-
-    # Check if the correlator is running. If yes, exit immediately.
-    # We check this by reading the `/tmp/spltcontrol_status.log`
-    # file, whose first line encodes the current status (ON or OFF)
-    # of the correlator. Note that this has to be read from login02.
-    if [ "$(ssh login02 "cat /tmp/spltcontrol_status.log" | head -1)" = "splt_stat = ON" ]; then
-      echo "Correlator is running. Exiting..."
-      exit 1
-    fi
-
-    # Write the current status of the pipeline to the status file. This is
-    # currently the `/tmp/analysis_status.log` file, and contains only one
-    # line: "ANALYSIS = ON" or "ANALYSIS = OFF". We write the same line to
-    # the monitor file, so that the webpage is updated accordingly.
-    # NOTE: We copy this file to login02, otherwise it won't be read by the correlator!
-    echo "ANALYSIS = ON" >"${STATUSFILE}"
-    echo "ANALYSIS = ON" >"${MONITORFILE}"
-    scp "${STATUSFILE}" "login02:${STATUSFILE}"
-    cp "${VER0DIR}/assets/nodes.list.all" "${VER0DIR}/assets/nodes.list"
-    ver0_run
-    echo "ANALYSIS = OFF" >"${STATUSFILE}"
-    echo "ANALYSIS = OFF" >"${MONITORFILE}"
-    scp "${STATUSFILE}" "login02:${STATUSFILE}"
-    ;;
-  # NOTE: In this mode, the pipeline is "restricted" to 4 nodes at the end
-  # of the second rack, meant to not be used by the correlator. This allows
-  # us to run the pipeline even if the correlator is running, and hence none
-  # of the status files need to be updated.
-  # NOTE: We still update the monitor file with the ON status when the pipeline
-  # is running, since that updates the webpage, and helps inform the rest of the
-  # team whether analysis is going or not.
-  "-r" | "--restricted")
-    echo "ANALYSIS = OFF" >"${STATUSFILE}"
-    echo "ANALYSIS = ON" >"${MONITORFILE}"
-    scp "${STATUSFILE}" "login02:${STATUSFILE}"
-    cp "${VER0DIR}/assets/nodes.list.ltd" "${VER0DIR}/assets/nodes.list"
-    ver0_run
-    ;;
-  # NOTE: In this mode, we do nothing, since it is assumed that the user has
-  # edited the `nodes.list` themselves, and want to run the pipeline on a
-  # custom set of nodes.
-  "-m" | "--manual") ver0_run ;;
+  "-m" | "--manual") readarray -t NODES <"${VER0DIR}/assets/nodes.list" ;;
+  "-a" | "--all") readarray -t NODES <"${VER0DIR}/assets/nodes.list.all" ;;
+  "-r" | "--restricted") readarray -t NODES <"${VER0DIR}/assets/nodes.list.ltd" ;;
   esac
-  ;;
-"kill") ver0_kill ;;
-"verify") ver0_verify "${1}" ;;
-"" | "-h" | "--help" | "help") ver0_help ;;
-*)
-  echo "Error: \"${CMD}\" is not a known subcommand." >&2
-  echo "Run ${PROGNAME} help for a list of known subcommands." >&2
-  echo "Exiting..." >&2
-  exit 1
-  ;;
-esac
+
+  case "${CMD}" in
+  "run")
+    case "${OPT}" in
+    "-a" | "--all")
+      # NOTE: In this mode, we need to check if the correlator is running, since we
+      # wish to use nodes that are used by the correlator. If the correlator is not
+      # running, we need to prevent it from running while the `ver0` pipeline is being
+      # run, so that they don't conflict with one another.
+      corrcheck
+      runstatus "ON"
+      webstatus "ON"
+      ver0_run "${NODES[@]}"
+      runstatus "OFF"
+      webstatus "OFF"
+      ;;
+    "-r" | "--restricted")
+      # NOTE: In this mode, the pipeline is "restricted" to 4 nodes at the end
+      # of the second rack, meant to not be used by the correlator. This allows
+      # us to run the pipeline even if the correlator is running, and hence none
+      # of the status files need to be updated. We still update the monitor file
+      # with the ON status when the pipeline is running, since that updates the
+      # webpage, and helps inform the rest of the team whether analysis is going
+      # or not.
+      webstatus "ON"
+      runstatus "OFF"
+      ver0_run "${NODES[@]}"
+      ;;
+    "-m" | "--manual")
+      # NOTE: In this mode, the user is trying to run the pipeline on a custom set of
+      # nodes. Thus, we need to check if any of the nodes specified conflict with the
+      # ones used by the correlator. We then run the pipeline accordingly.
+      for NODE in "${NODES[@]}"; do
+        NODEID="${NODE:5}"
+        if [ "${NODEID}" -lt 35 ]; then
+          corrcheck
+          runstatus "ON"
+        else
+          runstatus "OFF"
+        fi
+      done
+      webstatus "ON"
+      ver0_run "${NODES[@]}"
+      ;;
+    *)
+      echo "Error: You need to specify which mode to run the pipeline in!"
+      echo "Run ${PROGNAME} help for a list of known subcommands." >&2
+      echo "Exiting..."
+      ;;
+    esac
+    ;;
+  "kill") ver0_kill "${NODES[@]}" ;;
+  "verify") ver0_verify "${2}" ;;
+  "" | "-h" | "--help" | "help") ver0_help ;;
+  *)
+    echo "Error: \"${CMD}\" is not a known subcommand." >&2
+    echo "Run ${PROGNAME} help for a list of known subcommands." >&2
+    echo "Exiting..." >&2
+    exit 1
+    ;;
+  esac
+}
+
+main "$@"
