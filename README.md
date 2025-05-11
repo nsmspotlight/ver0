@@ -8,7 +8,8 @@ search pipeline. This pipeline is a temporary measure, until a fully
 online real-time pipeline is put into place. It is entirely offline, and
 is multi-beam, multi-node, and multi-GPU. It is only meant to run on the
 **Param Brahmand** system at the GMRT. Currently, it is being used to
-process data being collected through **GMRT’s GTAC Cycle 48**.
+process data being collected as part of SPOTLIGHT’s commensal operations
+in **GMRT’s GTAC Cycle 48**.
 
 ## Quick Start
 
@@ -21,7 +22,8 @@ To run it, follow these steps:
 -   Enter the `ver0/` directory (`cd ver0` *or* `cd $VER0DIR`).
 -   Add the observations you wish to process to
     [**`assets/gtac.list`**](./assets/gtac.list).
--   Then run: `./ver0 run`.
+-   Then run: `./ver0 run -a` OR `./ver0 run -r` OR `./ver0 run -m`.
+    (See @notes.)
 
 > ****A few notes**:**
 >
@@ -36,11 +38,11 @@ To run it, follow these steps:
 > 2.  Note that two pre-existing node lists are already provided for
 >     you:
 >
->     1.  [**`assets/nodes.list.all`**](./assets/nodes.list.all): A list
+>     -   [**`assets/nodes.list.all`**](./assets/nodes.list.all): A list
 >         of all 36 nodes available on Rack 1 and Rack 2. This list is
 >         only supposed to be used when the correlator is off, which is
 >         when all these nodes are available for offline processing.
->     2.  [**`assets/nodes.list.ltd`**](./assets/nodes.list.ltd): A list
+>     -   [**`assets/nodes.list.ltd`**](./assets/nodes.list.ltd): A list
 >         of 4 nodes in Rack 2: `rggpu36`, `rggpu37`, `rggpu38`, and
 >         `rggpu39`. These are the nodes which are available regardless
 >         of whether the correlator is operational or not. This allows
@@ -49,7 +51,7 @@ To run it, follow these steps:
 >     `ver0` has the ability to pick one of these subsets. By default,
 >     it will pick all 36 nodes to run the pipeline; one can explicitly
 >     select this mode by running `./ver0 run -a` or `./ver0 run --all`.
->     This checks if the correaltor is running, and will prevent it from
+>     This checks if the correlator is running, and will prevent it from
 >     running if it is not already doing so. If one wishes to run the
 >     analysis on just the 4 nodes in `nodes.list.ltd`, then one should
 >     run the pipeline with `./ver0 run -r` or
@@ -73,15 +75,13 @@ To run it, follow these steps:
 ## Usage
 
 For more help on the `ver0` script, just run `./ver0` *or*
-`./ver0 help`. It should show something like this:
+`./ver0 help`. It should show something like this the screenshot
+displayed in <a href="#fig-ver0help" class="quarto-xref">Figure 1</a>.
 
-<figure>
-<img src="./figures/screenshot1.png" alt="Screenshot of ver0’s help" />
-<figcaption aria-hidden="true">Screenshot of ver0’s help</figcaption>
-</figure>
+![](./figures/screenshot1.png)
 
-From the screenshot above, we can see that the `ver0` script provides
-the following commands:
+From <a href="#fig-ver0help" class="quarto-xref">Figure 1</a>, we can
+see that the `ver0` script provides the following commands:
 
 -   **`run`**: Runs the pipeline. Requires no input. The user should
     fill the `gtac.list` file with the GTAC observations they wish to

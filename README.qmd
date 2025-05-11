@@ -6,7 +6,7 @@ format:
 
 # `ver0`: [**SPOTLIGHT**][spotlight]'s `Ver0` Pipeline
 
-[**`ver0`**][ver0] is the zeroth version of [**SPOTLIGHT**][spotlight]'s transient search pipeline. This pipeline is a temporary measure, until a fully online real-time pipeline is put into place. It is entirely offline, and is multi-beam, multi-node, and multi-GPU. It is only meant to run on the **Param Brahmand** system at the GMRT. Currently, it is being used to process data being collected through **GMRT's GTAC Cycle 48**.
+[**`ver0`**][ver0] is the zeroth version of [**SPOTLIGHT**][spotlight]'s transient search pipeline. This pipeline is a temporary measure, until a fully online real-time pipeline is put into place. It is entirely offline, and is multi-beam, multi-node, and multi-GPU. It is only meant to run on the **Param Brahmand** system at the GMRT. Currently, it is being used to process data being collected as part of SPOTLIGHT's commensal operations in **GMRT's GTAC Cycle 48**.
 
 ## Quick Start
 
@@ -17,30 +17,30 @@ To run it, follow these steps:
 - Source the `env.sh` file (`source env.sh`).
 - Enter the `ver0/` directory (`cd ver0` _or_ `cd $VER0DIR`).
 - Add the observations you wish to process to [**`assets/gtac.list`**](./assets/gtac.list).
-- Then run: `./ver0 run`.
+- Then run: `./ver0 run -a` OR `./ver0 run -r` OR `./ver0 run -m`. (See @notes.)
 
-:::{.callout-note}
+:::{#notes .callout-note}
 ### **A few notes**:
 
  1. Before you run `ver0`, you need to fill in [**`assets/gtac.list`**](./assets/gtac.list) with the name of the observations you wish to process. These are the directory names for each observation, as recorded at `/lustre_data/spotlight/data`, with one directory name on each line. The pipeline will go through them one-by-one, and process all scans in each observation sequentially until it is done.
 
  2. Note that two pre-existing node lists are already provided for you:
 
-     1.  [**`assets/nodes.list.all`**](./assets/nodes.list.all): A list of all 36 nodes available on Rack 1 and Rack 2. This list is only supposed to be used when the correlator is off, which is when all these nodes are available for offline processing.
-     2. [**`assets/nodes.list.ltd`**](./assets/nodes.list.ltd): A list of 4 nodes in Rack 2: `rggpu36`, `rggpu37`, `rggpu38`, and `rggpu39`. These are the nodes which are available regardless of whether the correlator is operational or not. This allows us to run the pipeline alongside the correlator.
+     - [**`assets/nodes.list.all`**](./assets/nodes.list.all): A list of all 36 nodes available on Rack 1 and Rack 2. This list is only supposed to be used when the correlator is off, which is when all these nodes are available for offline processing.
+     - [**`assets/nodes.list.ltd`**](./assets/nodes.list.ltd): A list of 4 nodes in Rack 2: `rggpu36`, `rggpu37`, `rggpu38`, and `rggpu39`. These are the nodes which are available regardless of whether the correlator is operational or not. This allows us to run the pipeline alongside the correlator.
     
-    `ver0` has the ability to pick one of these subsets. By default, it will pick all 36 nodes to run the pipeline; one can explicitly select this mode by running `./ver0 run -a` or `./ver0 run --all`. This checks if the correaltor is running, and will prevent it from running if it is not already doing so. If one wishes to run the analysis on just the 4 nodes in `nodes.list.ltd`, then one should run the pipeline with `./ver0 run -r` or `./ver0 run --restricted`. Note that this will run whether or not the correlator is running or not, since the nodes it uses are not used by the correlator. In case a different set of nodes is required to run the pipeline, one should manually edit the [**`assets/nodes.list`**](./assets/nodes.list) file before running the pipeline, and then run it with `./ver0 run -m` or `./ver0 run --manual`.
+    `ver0` has the ability to pick one of these subsets. By default, it will pick all 36 nodes to run the pipeline; one can explicitly select this mode by running `./ver0 run -a` or `./ver0 run --all`. This checks if the correlator is running, and will prevent it from running if it is not already doing so. If one wishes to run the analysis on just the 4 nodes in `nodes.list.ltd`, then one should run the pipeline with `./ver0 run -r` or `./ver0 run --restricted`. Note that this will run whether or not the correlator is running or not, since the nodes it uses are not used by the correlator. In case a different set of nodes is required to run the pipeline, one should manually edit the [**`assets/nodes.list`**](./assets/nodes.list) file before running the pipeline, and then run it with `./ver0 run -m` or `./ver0 run --manual`.
 
  3. Since the pipeline does take some time to run, one can run it inside a detached terminal via `screen`. To do so, create a new terminal using `screen -S <NAME>`, source the `env.sh` file, run `ver0.sh` as instructed above, and then detach by pressing `Ctrl + A` and then `D`. To reattach, just run `screen -r <NAME>`, where `NAME` is the name you gave to the terminal when you created it. This can prevent a disturbance in, or disconnection of, the SSH connection from killing or interrupting the pipeline's run.
 :::
 
 ## Usage
 
-For more help on the `ver0` script, just run `./ver0` _or_ `./ver0 help`. It should show something like this:
+For more help on the `ver0` script, just run `./ver0` _or_ `./ver0 help`. It should show something like this the screenshot displayed in @fig-ver0help.
 
-![Screenshot of ver0's help](./figures/screenshot1.png)
+![A screenshot of the help message for `ver0`, displayed when you just run it without any arguments, or if you run it as `./ver0 help`.](./figures/screenshot1.png){#fig-ver0help}
 
-From the screenshot above, we can see that the `ver0` script provides the following commands:
+From @fig-ver0help, we can see that the `ver0` script provides the following commands:
 
 * **`run`**: Runs the pipeline. Requires no input. The user should fill the `gtac.list` file with the GTAC observations they wish to process, and then run this command as : `./ver0 run`. The pipeline will automatically pick up multiple scans from each observation (if present), and process them sequentially. It will then proceed to analyse the next observation. No intervention is required from the side of the user.
 
