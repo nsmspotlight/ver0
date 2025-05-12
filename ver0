@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+
+PROGNAME="ver0"
+VERSION="0.0.1"
+AUTHORNAME="Ujjwal Panda"
+AUTHOREMAIL="ujjwalpanda97@gmail.com"
+PROGDESC="A shell script that runs SPOTLIGHT's offline transient search pipeline."
+
+NBEAMS=640
+STATUSFILE="/tmp/analysis_status.log"
+MONITORFILE="/lustre_archive/spotlight/data/MON_DATA/das_log/analysis_status.log"
+
+# Extract filterbank files.
+xtraction() {
+  SCAN="$(basename "${SCANIN}")"
+
+  # Get the names of the raw files, using a regular expression.
+  # We used `find` to search for files, and `sed` to escape the
+  # strings being matched.
+  FILES=()
+  while IFS= read -r -d $'\0'; do
+    FILES+=("$REPLY")
+  done < <(
+    find \
+      "${BEAMDIR}" \
+      -regextype posix-extended \
+      -regex "$(sed 's/[^^]/[&]/g; s/\^/\\^/g' <<<"${BEAMDIR}/${SCAN}").raw.[0-9]+" -print0
+  )
+
+  # SSH into the first node in the node list, and extract
+  # the filterbank files there. We run it parallely over
+  # 16 cores, one for each file.
+  ssh -t -t "${NODES[0]}" "
+      $(typeset -f)
+      source ${TDSOFT}/env.sh;
+      xtract2fil \
+        ${FILES[*]} \
+        --njobs 16 \
+        --output ${SCANIN} \
+        --nbeams $((NBEAMS / 16));"
+}
+
+# Run AstroAccelerate on a single file.
+aasinglefile() {
+  NODE="${2}"
+  GPUID="${3}"
+  SCANOUT="${4}"
+  FILEPATH="${1}"
+  BEAMNAME="$(basename "${1}" ".fil")"
+
+  # Set necessary environment variables.
+  AA="${TDSOFT}/aa.frb"
+  AA_EXE="${AA}/build"
+  AA_OUTPUTS="${SCANOUT}"
+  AA_CURFILE="${FILEPATH}"
+  AA_JOB_DIR="${AA_OUTPUTS}/${BEAMNAME}"
+  AA_CONFIG="${AA}/input_files/gmrt.${NODE}.${GPUID}.txt"
+
+  # Create the directory where we will drop AstroAccelerate's output.
+  mkdir -p "${AA_JOB_DIR}"
+  cd "${AA_JOB_DIR}" || exit
+  echo "${AA_CURFILE}" >"curfile.txt"
+
+  # Remove any results from a previous run.
+  rm -f analysed*
+  rm -f acc*
+  rm -f global*
+  rm -f fourier*
+  rm -f harmonic*
+  rm -f candidate*
+  rm -f peak*
+
+  # Create and write the configuration file.
+  read -r -d '' __CONFIG <<EOM
+range    0    150  0.1  1 1
+range    150  300  0.1  1 1
+range    300  500  0.1  1 1
+range    500  900  0.2  1 1
+range    900  1200 0.4  1 1
+range    1200 1500 0.8  1 1
+range    1500 2000 1.0  1 1
+
+selected_card_id ${GPUID}
+
+sigma_cutoff    6
+sigma_constant  3.0
+max_boxcar_width_in_sec 0.5
+
+zero_dm
+analysis
+baselinenoise
+set_bandpass_average
+output_DDTR_normalization
+
+file ${AA_CURFILE}
+EOM
+  echo "${__CONFIG}" >"${AA_CONFIG}"
+
+  # Run AstroAccelerate.
+  time "${AA_EXE}/astro-accelerate" "${AA_CONFIG}"
+
+  # Finally, cat all outputs into a single file for each module.
+  if ls analysed* 1>/dev/null 2>&1; then cat analysed* >global_analysed_frb.dat; fi
+  if ls fourier-* 1>/dev/null 2>&1; then cat fourier-* >global_periods.dat; fi
+  if ls fourier_inter* 1>/dev/null 2>&1; then cat fourier_inter* >global_interbin.dat; fi
+  if ls harmo* 1>/dev/null 2>&1; then cat harmo* >global_harmonics.dat; fi
+  if ls candidate* 1>/dev/null 2>&1; then cat candidate* >global_candidates.dat; fi
+  if ls peak* 1>/dev/null 2>&1; then cat peak* >global_peaks.dat; fi
+
+  echo "Finished. Output is located in ${AA_JOB_DIR}."
+}
+
+# Run AstroAccelerate on multiple files, in sequence.
+aamultifile() {
+  NODE="${2}"
+  GPUID="${3}"
+  SCANOUT="${4}"
+  FILELIST="${1}"
+  while read -r FILEPATH; do
+    aasinglefile "${FILEPATH}" "${NODE}" "${GPUID}" "${SCANOUT}"
+  done <"${FILELIST}"
+}
+
+# Post-process multiple files, in sequence.
+# NOTE: We carry out classification for all
+# beams at once, at the very end. ALl other
+# operations are done on a per-beam basis.
+postmultifile() {
+  SCANOUT="${1}"
+  DIRLIST="${2}"
+  while read -r DIRPATH; do
+    python "${VER0DIR}/scripts/cluster.py" "${DIRPATH}"
+    python "${VER0DIR}/scripts/candify.py" "${DIRPATH}"
+  done <"${DIRLIST}"
+  mapfile -t <"${DIRLIST}"
+  python "${VER0DIR}/scripts/classify.py" "${MAPFILE[@]}"
+}
+
+# Run AstroAccelerate over multiple nodes (and GPUs).
+aamultinode() {
+  python "${VER0DIR}/scripts/distribute.py" "pre" "${SCANIN}" "/tmp" "--nodes" "${NODES[@]}"
+  for NODE in "${NODES[@]}"; do
+    for GPUID in 0 1; do
+      scp "/tmp/aa.${NODE}.${GPUID}.txt" "${NODE}":"/tmp/aa.${NODE}.${GPUID}.txt"
+      ssh -n "${NODE}" "
+      $(typeset -f)
+      source ${TDSOFT}/env.sh;
+      aamultifile /tmp/aa.${NODE}.${GPUID}.txt ${NODE} ${GPUID} ${SCANOUT};
+      " >"${SCANOUT}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
+    done
+  done
+  wait
+}
+
+# Post-process beams over multiple nodes (and GPUs).
+postmultinode() {
+  python "${VER0DIR}/scripts/distribute.py" "post" "${SCANOUT}" "/tmp" "--nodes" "${NODES[@]}"
+  for NODE in "${NODES[@]}"; do
+    for GPUID in 0 1; do
+      scp "/tmp/post.${NODE}.${GPUID}.txt" "${NODE}":"/tmp/post.${NODE}.${GPUID}.txt"
+      ssh -n "${NODE}" "
+      $(typeset -f)
+      source ${TDSOFT}/env.sh;
+      CUDA_VISIBLE_DEVICES=${GPUID} postmultifile ${SCANOUT} /tmp/post.${NODE}.${GPUID}.txt;
+      " >>"${SCANOUT}/VER0.${NODE}.${GPUID}.txt" 2>&1 &
+    done
+  done
+  wait
+}
+
+# Verify if filterbank files were created successfully.
+filverify() {
+  NFILS="$(find "${SCANIN}" -name "BM*.fil" | wc -l)"
+  if [ "${NBEAMS}" -eq "${NFILS}" ]; then
+    echo "Xtraction worked."
+    echo "Number of filterbanks = ${NFILS}."
+    return 0
+  else
+    echo "Xtraction failed!"
+    echo "Number of filterbanks = ${NFILS} != ${NBEAMS}."
+    return 1
+  fi
+}
+
+# Verify AstroAccelerate was run successfully.
+aaverify() {
+  NDATS="$(find "${SCANOUT}" -name "global_peaks.dat" | wc -l)"
+  if [ "${NBEAMS}" -eq "${NDATS}" ]; then
+    echo "AstroAccelerate is done."
+    echo "Number of candidate files = ${NDATS}."
+    return 0
+  else
+    echo "AstroAccelerate has failed!"
+    echo "Number of candidate files (${NDATS}) != Number of beams (${NBEAMS})."
+    return 1
+  fi
+}
+
+# Verify if beams were post-processed successfully.
+postverify() {
+  for BMDIR in "${SCANOUT}"/BM*; do
+    BMNAME=$(basename "$BMDIR")
+    NH5="$(find "${BMDIR}" -name "*.h5" | wc -l)"
+    NCANDS="$(($(wc -l <"${BMDIR}/filtered_candidates.csv") - 1))"
+    if ! [ "${NCANDS}" -eq "${NH5}" ]; then
+      echo "Feature extraction failed for ${BMNAME}!"
+      echo "Number of candidates for ${BMNAME} = ${NCANDS}."
+      echo "Number of HDF5 files created for ${BMNAME} = ${NH5}."
+    fi
+  done
+
+  NCANDIDATES="$(find "${SCANOUT}" -name "*.h5" | wc -l)"
+  NCLASSIFIED="$(($(wc -l <"${SCANOUT}/classification.csv") - 1))"
+  if [ "${NCANDIDATES}" -eq "${NCLASSIFIED}" ]; then
+    echo "Classification finished successfully."
+    echo "Total number of classifications done = ${NCLASSIFIED}."
+  else
+    echo "Classification failed!"
+    echo "Total number of candidates (${NCANDIDATES}) != Total number of classifications done (${NCLASSIFIED})."
+  fi
+}
+
+# Check if the correlator is running. If yes, exit immediately.
+# We check this by reading the `/tmp/spltcontrol_status.log`
+# file, whose first line encodes the current status (ON or OFF)
+# of the correlator. Note that this has to be read from login02.
+corrcheck() {
+  if [ "$(ssh login02 "cat /tmp/spltcontrol_status.log" | head -1)" = "splt_stat = ON" ]; then
+    echo "Correlator is running. Exiting..."
+    exit 1
+  fi
+}
+
+# Write the current status of the pipeline to the status file. This is
+# currently the `/tmp/analysis_status.log` file, and contains only one
+# line: "ANALYSIS = ON" or "ANALYSIS = OFF".
+runstatus() {
+  STATUS="${1}"
+  echo "ANALYSIS = ${STATUS}" >"${STATUSFILE}"
+  # NOTE: Copy status file login02, otherwise it won't be read by the correlator!
+  scp "${STATUSFILE}" "login02:${STATUSFILE}"
+}
+
+# Write the current status of the pipeline to the file read by the monitoring
+# web page. We write the status in the same way as the status file. Note that
+# we don't need to copy this anywhere, since the monitor file is on a disk that
+# can be seen by all nodes.
+webstatus() {
+  STATUS="${1}"
+  echo "ANALYSIS = ${STATUS}" >"${MONITORFILE}"
+}
+
+# Print the help for `ver0`.
+ver0_help() {
+  echo "                                    "
+  echo "  ██╗   ██╗███████╗██████╗  ██████╗ "
+  echo "  ██║   ██║██╔════╝██╔══██╗██╔═████╗"
+  echo "  ██║   ██║█████╗  ██████╔╝██║██╔██║"
+  echo "  ╚██╗ ██╔╝██╔══╝  ██╔══██╗████╔╝██║"
+  echo "   ╚████╔╝ ███████╗██║  ██║╚██████╔╝"
+  echo "    ╚═══╝  ╚══════╝╚═╝  ╚═╝ ╚═════╝ "
+  echo "                                    "
+  echo
+  echo "  ${PROGNAME} v${VERSION}"
+  echo
+  echo "  Copyright (c) ${AUTHORNAME} <${AUTHOREMAIL}>"
+  echo
+  echo "  ${PROGDESC}"
+  echo
+  echo "  Usage:"
+  echo
+  echo "  OPTIONS:"
+  echo "    -b OR --beams:      Specify the number of beams (Default: 640)."
+  echo "    -a OR --all:        Run on all 36 nodes."
+  echo "    -r OR --restricted: Run on only 4 nodes: rggpu36 to rggpu39."
+  echo "    -m OR --manual:     Run on whichver nodes there are in assets/nodes.list."
+  echo
+  echo "  COMMANDS:"
+  echo "    run       Run the pipeline."
+  echo "    help      Print this help message."
+  echo "    verify    Verify a run of the pipeline."
+  echo "    kill      Kill the pipeline. NOTE: Use with caution, since this kills EVERYTHING."
+  echo
+}
+
+# Run the `ver0` pipeline.
+ver0_run() {
+  NODES="${1}"
+  while read -r GTACDIR; do
+    GTACDIR="/lustre_data/spotlight/data/${GTACDIR}"
+
+    FILDIR="${GTACDIR}/FilData"
+    BEAMDIR="${GTACDIR}/BeamData"
+    PIPEDIR="${GTACDIR}/FRBPipeData"
+
+    SCANS=()
+    for FN in "${BEAMDIR}"/*.raw.0.ahdr; do
+      SCANS+=("$(basename "${FN}" ".raw.0.ahdr")")
+    done
+
+    for SCAN in "${SCANS[@]}"; do
+      SCANIN="${FILDIR}/${SCAN}"
+      SCANOUT="${PIPEDIR}/${SCAN}"
+
+      mkdir -p "${SCANIN}"
+      mkdir -p "${SCANOUT}"
+
+      time xtraction
+      if ! filverify; then exit 1; fi
+      time aamultinode
+      if ! aaverify; then exit 1; fi
+      time postmultinode
+      postverify
+
+      # Only delete raw files if classification has been done.
+      if [ -f "${SCANOUT}/classification.csv" ]; then
+        if [ -s "${SCANOUT}/classification.csv" ]; then
+          echo "Deleting raw files and copying over headers."
+          # Remove raw files and copy over the headers to where
+          # the filterbanks are. The headers are mostly used by
+          # Jyotirmoy's offline pulsar search pipeline.
+          for FILE in "${FILES[@]}"; do
+            rm -rf "${FILE}"
+            cp "${FILE}.ahdr" "${SCANIN}"
+          done
+        fi
+      fi
+
+    done
+    # Make the plots and finalise the results.
+    /lustre_data/spotlight/data/post_ver0/plot_candydates_ver0.sh "${GTACDIR}"
+    /lustre_data/spotlight/data/post_ver0/make_trans_detect_plot_ver0.sh "${GTACDIR}"
+  done <"${VER0DIR}/assets/gtac.list"
+}
+
+# Verify a run of the `ver0` pipeline.
+ver0_verify() {
+  GTACDIR="/lustre_data/spotlight/data/${1}"
+  FILDIR="${GTACDIR}/FilData"
+  BEAMDIR="${GTACDIR}/BeamData"
+  PIPEDIR="${GTACDIR}/FRBPipeData"
+
+  SCANS=()
+  for FN in "${BEAMDIR}"/*.raw.0.ahdr; do
+    SCANS+=("$(basename "${FN}" ".raw.0.ahdr")")
+  done
+
+  for SCAN in "${SCANS[@]}"; do
+    SCANIN="${FILDIR}/${SCAN}"
+    SCANOUT="${PIPEDIR}/${SCAN}"
+    filverify
+    aaverify
+    postverify
+  done
+}
+
+# Kill a run of the `ver0` pipeline.
+# HACK: Kills all processes on each
+# of the nodes in the node list. To
+# be USED WITH UTMOST CAUTION.
+ver0_kill() {
+  NODES="${1}"
+  while true; do
+    # NOTE: Since this command shouldn't get run accidentally,
+    # we first prompt the user if they are sure. Hopefully, it
+    # should prevent people from accidentally running the command.
+    read -r -p "Do you wish to kill the pipeline?
+WARNING: THIS KILLS ALL PROCESSES ON EACH NODE!
+Yes (y or Y) / No (n or N): " YN
+    case "${YN}" in
+    [Yy]*)
+      for NODE in "${NODES[@]}"; do
+        ssh -n "${NODE}" "skill -u spotlight"
+      done
+      break
+      ;;
+    [Nn]*) exit ;;
+    *) echo "Please answer yes or no." ;;
+    esac
+  done
+}
+
+# The main `ver0` application loop.
+main() {
+  CMD="${1}"
+
+  OPT="${2}"
+  case "${OPT}" in
+  "-b" | "--beams") NBEAMS="${3}" ;;
+  "-m" | "--manual") readarray -t NODES <"${VER0DIR}/assets/nodes.list" ;;
+  "-a" | "--all") readarray -t NODES <"${VER0DIR}/assets/nodes.list.all" ;;
+  "-r" | "--restricted") readarray -t NODES <"${VER0DIR}/assets/nodes.list.ltd" ;;
+  esac
+
+  case "${CMD}" in
+  "run")
+    case "${OPT}" in
+    "-a" | "--all")
+      # NOTE: In this mode, we need to check if the correlator is running, since we
+      # wish to use nodes that are used by the correlator. If the correlator is not
+      # running, we need to prevent it from running while the `ver0` pipeline is being
+      # run, so that they don't conflict with one another.
+      corrcheck
+      runstatus "ON"
+      webstatus "ON"
+      ver0_run "${NODES[@]}"
+      runstatus "OFF"
+      webstatus "OFF"
+      ;;
+    "-r" | "--restricted")
+      # NOTE: In this mode, the pipeline is "restricted" to 4 nodes at the end
+      # of the second rack, meant to not be used by the correlator. This allows
+      # us to run the pipeline even if the correlator is running, and hence none
+      # of the status files need to be updated. We still update the monitor file
+      # with the ON status when the pipeline is running, since that updates the
+      # webpage, and helps inform the rest of the team whether analysis is going
+      # or not.
+      webstatus "ON"
+      runstatus "OFF"
+      ver0_run "${NODES[@]}"
+      ;;
+    "-m" | "--manual")
+      # NOTE: In this mode, the user is trying to run the pipeline on a custom set of
+      # nodes. Thus, we need to check if any of the nodes specified conflict with the
+      # ones used by the correlator. We then run the pipeline accordingly.
+      for NODE in "${NODES[@]}"; do
+        NODEID="${NODE:5}"
+        if [ "${NODEID}" -lt 35 ]; then
+          corrcheck
+          runstatus "ON"
+        else
+          runstatus "OFF"
+        fi
+      done
+      webstatus "ON"
+      ver0_run "${NODES[@]}"
+      ;;
+    *)
+      echo "Error: You need to specify which mode to run the pipeline in!"
+      echo "Run ${PROGNAME} help for a list of known subcommands." >&2
+      echo "Exiting..."
+      ;;
+    esac
+    ;;
+  "kill") ver0_kill "${NODES[@]}" ;;
+  "verify") ver0_verify "${2}" ;;
+  "" | "-h" | "--help" | "help") ver0_help ;;
+  *)
+    echo "Error: \"${CMD}\" is not a known subcommand." >&2
+    echo "Run ${PROGNAME} help for a list of known subcommands." >&2
+    echo "Exiting..." >&2
+    exit 1
+    ;;
+  esac
+}
+
+main "$@"

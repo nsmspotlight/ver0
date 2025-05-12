@@ -38,13 +38,12 @@ def main():
         groups = candidates.to_df().groupby("file")
         for fname, group in groups:
             featurize(
+                CandidateList.from_df(group),
+                str(fname),
                 save=True,
                 zoom=True,
                 fudging=512,
-                verbose=False,
                 progressbar=False,
-                filterbank=str(fname),
-                candidates=CandidateList.from_df(group),
             )
     t1 = time.time()
     dt = t1 - t0

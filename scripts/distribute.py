@@ -3,6 +3,8 @@ import argparse
 from pathlib import Path
 from natsort import natsorted
 
+VER0DIR = Path(os.environ["VER0DIR"])
+
 
 def batched(x: list, k: int):
     n = len(x)
@@ -12,30 +14,26 @@ def batched(x: list, k: int):
     ]
 
 
-GPUIDS = [0, 1]
-VER0DIR = Path(os.environ["VER0_DIR"])
-NODES = (VER0DIR / "assets" / "nodes.list").read_text().split()
-
-
 def pre(args):
-    filfiles = natsorted(list(Path(args.dirpath).glob("*.fil")))
-    batches = [batch for batch in batched(filfiles, k=len(NODES) * 2)]
-    pairs = [(gpuid, node) for node in NODES for gpuid in GPUIDS]
+    filfiles = natsorted(list(Path(args.dirpath).glob("BM*.fil")))
+    batches = [batch for batch in batched(filfiles, k=len(args.nodes) * 2)]
+    pairs = [(gpuid, node) for node in args.nodes for gpuid in [0, 1]]
 
     for (gpuid, node), batch in zip(pairs, batches):
         with open(args.outpath / f"aa.{node}.{gpuid}.txt", "w") as f:
             f.write("\n".join([str(_) for _ in batch]))
+            f.write("\n")
 
 
 def post(args):
     beamdirs = natsorted([_ for _ in Path(args.dirpath).glob("*") if _.is_dir()])
-    bcounts = [beamdir / "bcount0000" for beamdir in beamdirs]
-    batches = [batch for batch in batched(bcounts, k=len(NODES) * 2)]
-    pairs = [(gpuid, node) for node in NODES for gpuid in GPUIDS]
+    batches = [batch for batch in batched(beamdirs, k=len(args.nodes) * 2)]
+    pairs = [(gpuid, node) for node in args.nodes for gpuid in [0, 1]]
 
     for (gpuid, node), batch in zip(pairs, batches):
         with open(args.outpath / f"post.{node}.{gpuid}.txt", "w") as f:
             f.write("\n".join([str(_) for _ in batch]))
+            f.write("\n")
 
 
 def main():
@@ -46,10 +44,12 @@ def main():
 
     preparser.add_argument("dirpath", type=Path)
     preparser.add_argument("outpath", type=Path)
+    preparser.add_argument("--nodes", nargs="+", type=str)
     preparser.set_defaults(func=pre)
 
     postparser.add_argument("dirpath", type=Path)
     postparser.add_argument("outpath", type=Path)
+    postparser.add_argument("--nodes", nargs="+", type=str)
     postparser.set_defaults(func=post)
 
     args = parser.parse_args()
