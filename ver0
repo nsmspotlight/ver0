@@ -168,17 +168,6 @@ postmultinode() {
   wait
 }
 
-# Sort all the final candidates, and make the plots for them.
-# TODO: Incorporate Kshitij's codes for the same here. See if
-# they can be improved as well.
-finalize() {
-  NODES="${1}"
-  SCANOUT="${2}"
-  for BMDIR in "${SCANOUT}"/BM*; do
-    candies plot "${BMDIR}"/*.h5
-  done
-}
-
 # Verify if filterbank files were created successfully.
 filverify() {
   NFILS="$(find "${SCANIN}" -name "BM*.fil" | wc -l)"
@@ -338,6 +327,9 @@ ver0_run() {
       fi
 
     done
+    # Make the plots and finalise the results.
+    /lustre_data/spotlight/data/post_ver0/plot_candydates_ver0.sh "${GTACDIR}"
+    /lustre_data/spotlight/data/post_ver0/make_trans_detect_plot_ver0.sh "${GTACDIR}"
   done <"${VER0DIR}/assets/gtac.list"
 }
 
