@@ -6,7 +6,7 @@ AUTHORNAME="Ujjwal Panda"
 AUTHOREMAIL="ujjwalpanda97@gmail.com"
 PROGDESC="A shell script that runs SPOTLIGHT's offline transient search pipeline."
 
-NBEAMS=640
+NBEAMS=160
 STATUSFILE="/tmp/analysis_status.log"
 MONITORFILE="/lustre_archive/spotlight/data/MON_DATA/das_log/analysis_status.log"
 
@@ -270,7 +270,6 @@ ver0_help() {
   echo "  Usage:"
   echo
   echo "  OPTIONS:"
-  echo "    -b OR --beams:      Specify the number of beams (Default: 640)."
   echo "    -a OR --all:        Run on all 36 nodes."
   echo "    -r OR --restricted: Run on only 4 nodes: rggpu36 to rggpu39."
   echo "    -m OR --manual:     Run on whichver nodes there are in assets/nodes.list."
@@ -386,7 +385,6 @@ main() {
 
   OPT="${2}"
   case "${OPT}" in
-  "-b" | "--beams") NBEAMS="${3}" ;;
   "-m" | "--manual") readarray -t NODES <"${VER0DIR}/assets/nodes.list" ;;
   "-a" | "--all") readarray -t NODES <"${VER0DIR}/assets/nodes.list.all" ;;
   "-r" | "--restricted") readarray -t NODES <"${VER0DIR}/assets/nodes.list.ltd" ;;
